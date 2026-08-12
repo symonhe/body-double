@@ -160,6 +160,7 @@ def main():
     print("\nNo terms were created. An annotated example is in terms.example.json.")
 
     print("\nRunning doctor:\n")
+    sys.stdout.flush()  # subprocess writes straight to fd 1; flush or our summary lands after it
     subprocess.call([target, "doctor"])
     return 0
 
