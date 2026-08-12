@@ -128,7 +128,8 @@ Your own terms, plus these built-in categories (34 patterns, no configuration ne
 
 **Credentials** Anthropic, OpenAI, GitHub, AWS, Google, Slack, Stripe, SendGrid,
 HuggingFace and npm keys; JWTs; PEM private keys; `Authorization:` headers; any
-`*_KEY` / `*_SECRET` / `*_TOKEN` / `PASSWORD` assignment.
+`*_KEY` / `*_SECRET` / `*_TOKEN` / `PASSWORD` assignment; and passwords hidden in
+connection strings (`postgres://user:pw@host`, `redis://`, `mongodb://`).
 
 **Identity** emails, phone numbers (US and international), SSN-shaped values.
 

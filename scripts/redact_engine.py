@@ -45,6 +45,10 @@ BUILTIN = [
     ("secret", r"\bnpm_[A-Za-z0-9]{30,}", "[npm-token]"),
     ("secret", r"\beyJ[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{8,}", "[jwt]"),
     ("secret", r"(?i)\b(?:authorization|bearer)\s*[:=]?\s*[\"']?[A-Za-z0-9_\-\.=]{24,}[\"']?", "[auth-header]"),
+    # Credentials inside a connection string. DATABASE_URL, redis://, mongodb:// and
+    # friends hide a password in the userinfo segment where no KEY=value rule
+    # will ever look. Keeps the scheme, host and user so the line stays legible.
+    ("secret", r"(?i)\b([a-z][a-z0-9+.\-]*://[^\s:/@]+):([^\s@/]{3,})@", r"\1:[redacted]@"),
     ("secret", r"(?i)\b([A-Z0-9_]*(?:API[_-]?KEY|SECRET|TOKEN|PASSWD|PASSWORD|PRIVATE[_-]?KEY|ACCESS[_-]?KEY)[A-Z0-9_]*)\s*[:=]\s*[\"']?([^\s\"',;]{8,})[\"']?", r"\1=[redacted]"),
 
     # --- identity and contact ---
