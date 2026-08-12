@@ -84,6 +84,20 @@ bodydouble add        # input is hidden: never on screen, never in shell history
 
 **Restart your AI session afterward.** Hooks load at startup.
 
+### Try it without risking your own data
+
+[**body-double-demo**](https://github.com/symonhe/body-double-demo) is a synthetic family
+dataset built for exactly this: invented people with invented medical, financial, school
+and credential records, spanning every category the redactor handles. Clone it, arm the
+tool, and watch a realistic repo go generic without putting anything real on screen.
+
+```bash
+git clone https://github.com/symonhe/body-double-demo.git
+cd body-double-demo && bodydouble on && cat household/contacts.md
+```
+
+It also ships an on-camera runbook, if you are demoing this to someone.
+
 ---
 
 ## Use
