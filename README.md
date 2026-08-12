@@ -124,7 +124,7 @@ tail -f app.log | python3 ~/.body-double/scripts/redact_engine.py --force
 
 ## What it detects out of the box
 
-Your own terms, plus these built-in categories (34 patterns, no configuration needed):
+Your own terms, plus these built-in categories (35 patterns across 9 categories, plus two rules that need more than a pattern: Luhn-validated cards and line-scoped birth dates):
 
 **Credentials** Anthropic, OpenAI, GitHub, AWS, Google, Slack, Stripe, SendGrid,
 HuggingFace and npm keys; JWTs; PEM private keys; `Authorization:` headers; any
@@ -136,8 +136,8 @@ connection strings (`postgres://user:pw@host`, `redis://`, `mongodb://`).
 **Financial** IBAN, routing and account numbers, CVV, card expiry, and card numbers
 **validated by Luhn**.
 
-**Medical** `Dr. Name`, `Name, MD`, dosages, MRN and patient IDs, insurance policy and
-group numbers.
+**Medical** `Dr. Name`, `Name, MD`, dosages, MRN and patient IDs, insurance policy,
+group, Medicare and Medicaid numbers, and birth dates on any line labelled as one.
 
 **Location and network** street addresses, precise coordinates, IPv4, MAC addresses.
 
