@@ -49,7 +49,10 @@ BUILTIN = [
 
     # --- identity and contact ---
     ("email", r"\b[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}\b", "[email]"),
-    ("phone", r"(?<![\w.])(?:\+?1[\s.\-]?)?\(?\d{3}\)?[\s.\-]\d{3}[\s.\-]\d{4}(?![\w.])", "[phone]"),
+    # Trailing guard is (?!\.?\d), not (?![\w.]): the old form refused to match a
+    # number at the end of a sentence, because the full stop counted as a
+    # disqualifier. This still declines to bite into dotted numerics like IPs.
+    ("phone", r"(?<![\w.])(?:\+?1[\s.\-]?)?\(?\d{3}\)?[\s.\-]\d{3}[\s.\-]\d{4}(?!\.?\d)(?![\w])", "[phone]"),
     ("phone", r"(?<![\w.])\+(?:[0-9][\s.\-]?){9,14}[0-9](?![\w.])", "[phone]"),
     ("gov_id", r"(?<![\w\-])\d{3}-\d{2}-\d{4}(?![\w\-])", "[gov-id]"),
 
@@ -59,9 +62,7 @@ BUILTIN = [
     ("financial", r"(?i)\b(?:cvv|cvc|security code)\s*[:#=]?\s*\d{3,4}\b", "[cvv]"),
     ("financial", r"(?i)\bexp(?:iry|iration)?\s*(?:date)?\s*[:#=]?\s*(?:0[1-9]|1[0-2])\s*/\s*\d{2,4}\b", "[card-expiry]"),
 
-    # --- dates of birth. Deliberately keyword-anchored: a bare date is not PII
-    # and masking every ISO date would destroy ordinary log output. ---
-    ("dob", r"(?i)\b(?:dob|d\.o\.b\.|date of birth|born(?:\s+on)?)\s*[:#=]?\s*[\w/\-\., ]{6,20}?(?=\s|$|[,;.])", "DOB: [date]"),
+    # Dates of birth are handled by _mask_labeled_dates below, not by a pattern here.
 
     # --- location ---
     ("address", r"(?i)\b\d{1,5}\s+(?:[A-Z][A-Za-z.'\-]*\s+){0,4}(?:street|st|avenue|ave|road|rd|boulevard|blvd|lane|ln|drive|dr|court|ct|way|place|pl|terrace|ter|circle|cir)\b\.?(?:[,\s]+(?:apt|apartment|unit|suite|ste|#)\s*[\w\-]+)?", "[street-address]"),
@@ -180,6 +181,34 @@ def _mask_cards(text):
 SENTENCE_END = ".!?:;\n"
 
 
+_DATE_TOKEN = re.compile(
+    r"\b(?:\d{4}-\d{1,2}-\d{1,2}"
+    r"|\d{1,2}[/-]\d{1,2}[/-]\d{2,4}"
+    r"|(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.?\s+\d{1,2},?\s+\d{4})\b")
+
+_DOB_LABEL = re.compile(r"(?i)\b(?:dob|d\.o\.b\.|date of birth|birthdate|birthday|born)\b")
+
+
+def _mask_labeled_dates(text):
+    """Redact date tokens only on lines that are labelled as a birth date.
+
+    A bare date is not PII, and masking every ISO date would destroy ordinary log
+    output. But adjacency alone is too strict: in a markdown table the label sits in
+    one cell and the values in the next, so `| DOB | 1985-02-11 | 1983-09-30 |` was
+    sailing straight through. Scoping to the line catches every value in the row and
+    leaves the surrounding structure intact.
+    """
+    if not _DOB_LABEL.search(text):
+        return text, 0
+    out, total = [], 0
+    for line in text.split("\n"):
+        if _DOB_LABEL.search(line):
+            line, n = _DATE_TOKEN.subn("[date]", line)
+            total += n
+        out.append(line)
+    return "\n".join(out), total
+
+
 def _case_match(original, replacement, text=None, start=None):
     """Capitalize the replacement only at a sentence start.
 
@@ -272,6 +301,9 @@ def mask_text(text, compiled_terms=None, config=None, enabled_builtins=None, cwd
     if "financial" not in disabled:
         text, n = _mask_cards(text)
         bump("financial", n)
+    if "dob" not in disabled:
+        text, n = _mask_labeled_dates(text)
+        bump("dob", n)
 
     return text, hits
 
