@@ -1,0 +1,13 @@
+# CRITICAL. The README tells you to clone this to ~/.body-double, and the
+# installer creates ~/.body-double/private/ for your term list. That puts your
+# term list INSIDE this working tree. It is a directory of exactly the names you
+# are protecting, so it must never be committed, and never pushed anywhere.
+private/
+terms.json
+state
+
+# python bytecode
+__pycache__/
+*.pyc
+
+.DS_Store

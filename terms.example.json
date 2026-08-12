@@ -1,0 +1,73 @@
+{
+  "_README": [
+    "Copy to ~/.body-double/private/terms.json and chmod 600, or just run `bodydouble add`,",
+    "which is safer because it reads input hidden so a term never lands on screen or in",
+    "your shell history.",
+    "",
+    "This file is an EXAMPLE. Every value below is fictional. Your real list is a",
+    "directory of exactly the names you are protecting, so treat it like a password file:",
+    "mode 600, outside any repo, never synced anywhere you would not sync credentials."
+  ],
+  "version": 1,
+  "config": {
+    "username": "CHANGE_ME_to_your_os_username",
+    "mask_username": true,
+    "show_footer": true,
+    "fail_closed": false,
+    "disabled_builtins": [],
+    "path_segments": [],
+    "path_segment_replacement": "workspace",
+    "path_overrides": [
+      {
+        "path_contains": "/work/analytics/",
+        "disable_builtins": ["financial"],
+        "why": "this tree is full of numeric data that trips the account-number rule, and hiding numbers you need to read is worse than showing them"
+      }
+    ]
+  },
+  "terms": [
+    {
+      "match": "Jane Smith",
+      "replace": "spouse",
+      "variants": ["Jane", "Jane S."],
+      "kind": "name",
+      "_hint": "list the full name AND the short forms; longest match wins, so both are safe"
+    },
+    {
+      "match": "Riley",
+      "replace": "child one",
+      "variants": [],
+      "kind": "name",
+      "_hint": "distinct labels per child keep sentences readable: 'child one has the allergy, child two does not' still means something, where two identical 'child' tokens do not"
+    },
+    {
+      "match": "Northgate Elementary",
+      "replace": "the school",
+      "variants": ["Northgate"],
+      "kind": "org",
+      "_hint": "schools, daycares and pediatric practices are the identifiers people forget until after the upload"
+    },
+    {
+      "match": "Acme Corporation",
+      "replace": "the client",
+      "variants": ["Acme"],
+      "kind": "org",
+      "_hint": "employers and clients under NDA"
+    },
+    {
+      "match": "Riverside Oncology",
+      "replace": "the clinic",
+      "variants": [],
+      "kind": "medical",
+      "_hint": "a practice name specific enough to identify a person's situation"
+    }
+  ],
+  "_NOT_RECOMMENDED": [
+    "Do not add generic relation words like 'wife', 'son' or 'daughter'. They identify",
+    "nobody, and they will rewrite unrelated text: any document mentioning someone",
+    "else's son becomes 'child'. Redact names, not roles.",
+    "",
+    "Do not add your own name if you appear on camera under it anyway. Your OS username",
+    "is the one worth redacting, since it sits inside every absolute path on screen."
+  ]
+}

@@ -1,0 +1,444 @@
+#!/usr/bin/env python3
+"""
+bodydouble - substitution-based redaction for screen recording.
+
+  bodydouble on | off | status
+  bodydouble canary              prove the hook is LIVE in this session (status cannot)
+  bodydouble footer on | off     show or hide the redaction count in output
+  bodydouble add                 add a term interactively (no echo, no shell history)
+  bodydouble rm                  remove a term interactively
+  bodydouble list                counts and kinds only, never the terms themselves
+  bodydouble test                pipe stdin through the engine, force-on
+  bodydouble selftest            collision check: does a term match ordinary text?
+  bodydouble preflight [PATH]    what would leak if you opened this tree on camera
+  bodydouble doctor              prove the wiring works end to end
+
+Nothing in this tool ever prints a masked term to stdout. That is deliberate:
+the term list is a directory of exactly the names being protected, so a
+`bodydouble list` run on camera must stay safe.
+"""
+
+import sys
+
+# Set before redact_engine is imported. This directory is browsed on camera and is
+# tracked in a repo with a remote, so a stray __pycache__ is both visual noise and
+# something that can get committed by accident. The hooks pass -B for the same reason.
+sys.dont_write_bytecode = True
+
+import getpass  # noqa: E402
+import json  # noqa: E402
+import os  # noqa: E402
+import re  # noqa: E402
+import subprocess  # noqa: E402
+
+# realpath, not abspath: this script is symlinked onto PATH from ~/.local/bin, and
+# abspath would resolve HERE to the symlink's directory. Python fixes sys.path[0]
+# by realpath on its own, so the import would still succeed while every path built
+# from HERE silently pointed at the wrong directory.
+HERE = os.path.dirname(os.path.realpath(__file__))
+sys.path.insert(0, HERE)
+
+import redact_engine as E  # noqa: E402
+
+SETTINGS = os.path.expanduser("~/.claude/settings.json")
+
+GREEN, RED, YELLOW, DIM, RESET = "\033[32m", "\033[31m", "\033[33m", "\033[2m", "\033[0m"
+
+# Ordinary text a term must NOT match. Catches the classic failure where a
+# short name is a substring of a normal English or shell word.
+COLLISION_CORPUS = """
+origin original originally orientation priority historical history story
+main master branch commit rebase merge stash remote upstream fetch pull push
+import export const let var function return async await class def print
+error warning info debug trace fatal panic assert expect actual
+package module vendor build dist target release debug node modules
+january february march april may june july august september october november december
+monday tuesday wednesday thursday friday saturday sunday
+alpha beta gamma delta epsilon zeta eta theta iota kappa lambda sigma omega
+test tests testing spec specs fixture mock stub sample example demo
+user users admin root guest owner member group role permission
+create read update delete list get set add remove insert select where
+true false null none nil undefined empty zero one two three
+"""
+
+
+def load_raw():
+    try:
+        with open(E.TERMS_PATH, "r", encoding="utf-8") as fh:
+            return json.load(fh)
+    except Exception:
+        return {"version": 1, "config": {}, "terms": []}
+
+
+def save_raw(data):
+    os.makedirs(E.PRIVATE_DIR, mode=0o700, exist_ok=True)
+    tmp = E.TERMS_PATH + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        json.dump(data, fh, indent=2, ensure_ascii=False)
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, E.TERMS_PATH)
+
+
+def cmd_on():
+    E.set_armed(True)
+    n = len(load_raw().get("terms", []))
+    print(GREEN + "ARMED" + RESET + " - %d term group(s) active." % n)
+    print(DIM + "Tool output is redacted before display. Your own typing is not." + RESET)
+
+
+def cmd_off():
+    E.set_armed(False)
+    print(YELLOW + "disarmed" + RESET + " - full output restored.")
+
+
+def cmd_status():
+    armed = E.is_armed()
+    raw = load_raw()
+    print((GREEN + "ARMED" + RESET) if armed else (DIM + "disarmed" + RESET))
+    print("terms: %d group(s)" % len(raw.get("terms", [])))
+    kinds = {}
+    for t in raw.get("terms", []):
+        kinds[t.get("kind", "name")] = kinds.get(t.get("kind", "name"), 0) + 1
+    if kinds:
+        print("kinds: " + ", ".join("%s=%d" % kv for kv in sorted(kinds.items())))
+    disabled = (raw.get("config") or {}).get("disabled_builtins", [])
+    active = len(set(n for n, _, _ in E.BUILTIN)) - len(set(disabled))
+    print("builtin categories active: %d" % active)
+    if disabled:
+        print("disabled: " + ", ".join(sorted(set(disabled))))
+
+
+def cmd_list():
+    raw = load_raw()
+    print("%-14s %-18s %s" % ("KIND", "REPLACEMENT", "FORMS"))
+    for t in raw.get("terms", []):
+        forms = 1 + len(t.get("variants", []) or [])
+        print("%-14s %-18s %d form(s)" % (t.get("kind", "name"), t.get("replace", "?"), forms))
+    print(DIM + "\nTerms themselves are never printed. Edit with `bodydouble add` / `bodydouble rm`," + RESET)
+    print(DIM + "or open %s directly when you are NOT recording." % E.TERMS_PATH + RESET)
+
+
+def cmd_add():
+    print(DIM + "Input is hidden. It will not appear on screen or in shell history." + RESET)
+    term = getpass.getpass("term to mask: ").strip()
+    if not term:
+        print("nothing entered, aborted.")
+        return
+    replace = input("replace with [spouse/child/relative/provider/...]: ").strip() or "[redacted]"
+    kind = input("kind [name/medical/financial/org/other] (default name): ").strip() or "name"
+    variants = []
+    while True:
+        v = getpass.getpass("variant / misspelling (blank to finish): ").strip()
+        if not v:
+            break
+        variants.append(v)
+    raw = load_raw()
+    raw.setdefault("terms", []).append(
+        {"match": term, "replace": replace, "variants": variants, "kind": kind}
+    )
+    save_raw(raw)
+    print(GREEN + "added." + RESET + " %d term group(s) total." % len(raw["terms"]))
+    warn = _collisions([(term, replace, kind)] + [(v, replace, kind) for v in variants])
+    if warn:
+        print(RED + "COLLISION WARNING" + RESET + " - this term matches ordinary text:")
+        for form, hits in warn:
+            print("  a %d-char term matched %d common word(s). Masked output will look wrong."
+                  % (len(form), len(hits)))
+        print("  Consider a longer form, or accept that some normal words get masked.")
+
+
+def cmd_rm():
+    raw = load_raw()
+    terms = raw.get("terms", [])
+    if not terms:
+        print("no terms.")
+        return
+    for i, t in enumerate(terms):
+        print("  [%d] %s -> %s (%d form(s))"
+              % (i, t.get("kind", "name"), t.get("replace", "?"),
+                 1 + len(t.get("variants", []) or [])))
+    idx = input("remove which index: ").strip()
+    try:
+        terms.pop(int(idx))
+    except Exception:
+        print("aborted.")
+        return
+    save_raw(raw)
+    print(GREEN + "removed." + RESET)
+
+
+def cmd_test():
+    terms, cfg = E.load_terms()
+    out, hits = E.mask_text(sys.stdin.read(), terms, cfg)
+    sys.stdout.write(out)
+    if hits:
+        sys.stderr.write("\n" + DIM + "hits: " + ", ".join(
+            "%s=%d" % kv for kv in sorted(hits.items())) + RESET + "\n")
+
+
+def _collisions(triples):
+    out = []
+    for form, _replace, _kind in triples:
+        pattern = r"(?<![\w])" + re.escape(form).replace(r"\ ", r"[\s_\-]+") + r"(?![\w])"
+        try:
+            hits = re.findall(pattern, COLLISION_CORPUS, re.IGNORECASE)
+        except re.error:
+            continue
+        if hits:
+            out.append((form, hits))
+    return out
+
+
+def cmd_selftest():
+    raw = load_raw()
+    triples = []
+    for t in raw.get("terms", []):
+        forms = [t.get("match", "")] + list(t.get("variants", []) or [])
+        for f in forms:
+            if f:
+                triples.append((f, t.get("replace", ""), t.get("kind", "name")))
+
+    print("== term collision check ==")
+    bad = _collisions(triples)
+    if bad:
+        for form, hits in bad:
+            print(RED + "  COLLIDES" + RESET + " a %d-char term matches %d ordinary word(s)"
+                  % (len(form), len(hits)))
+        print("  Short terms are the usual cause: a 2-3 char name that stands alone as an")
+        print("  ordinary word, like `Al` inside `Al` in a word list, or an initial used")
+        print("  as a name. Note that word boundaries already protect substrings, so a")
+        print("  3-char name does NOT eat longer words containing it.")
+    else:
+        print(GREEN + "  clean" + RESET + " - no term matches the ordinary-text corpus.")
+
+    short = [f for f, _, _ in triples if len(f) <= 3]
+    if short:
+        print(YELLOW + "  %d term(s) are 3 characters or shorter." % len(short) + RESET
+              + " High false-positive risk even if the corpus is clean.")
+
+    print("\n== builtin pattern check ==")
+    samples = [
+        ("secret", "ANTHROPIC_API_KEY=sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAA"),
+        ("secret", "ghp_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"),
+        ("secret", "aws_access_key_id = AKIAIOSFODNN7EXAMPLE"),
+        ("email", "ping me at someone@example.com ok"),
+        ("phone", "call 415-555-0142 tomorrow"),
+        ("gov_id", "ssn 123-45-6789"),
+        ("medical", "follow up with Dr. Aldous Whitfield next week"),
+        ("medical", "take 500 mg twice daily"),
+        ("medical", "MRN: 88213347"),
+        ("network", "server at 192.168.4.21 responded"),
+        ("address", "ships to 1600 Pennsylvania Avenue"),
+    ]
+    failures = 0
+    for expect, text in samples:
+        out, hits = E.mask_text(text, [], {})
+        if expect not in hits:
+            failures += 1
+            print(RED + "  MISS" + RESET + " category %s did not fire" % expect)
+    if not failures:
+        print(GREEN + "  all %d builtin probes fired." % len(samples) + RESET)
+
+    print("\n== false-positive check on ordinary output ==")
+    benign = [
+        "commit 3566beb ideas: capture note",
+        "  File \"main.py\", line 42, in <module>",
+        "npm WARN deprecated glob@7.2.3",
+        "Listening on http://localhost:3000",
+        "117 records checked, 0 violation(s)",
+    ]
+    live_terms, live_cfg = E.load_terms()
+    noisy = 0
+    for text in benign:
+        out, _hits = E.mask_text(text, live_terms, live_cfg)
+        if out != text:
+            noisy += 1
+            print(YELLOW + "  CHANGED" + RESET + " an ordinary line was modified by a live term")
+    if not noisy:
+        print(GREEN + "  clean" + RESET
+              + " - %d ordinary lines passed through untouched, with your real terms loaded."
+              % len(benign))
+    return 1 if (bad or failures) else 0
+
+
+BINARY_EXT = {".png", ".jpg", ".jpeg", ".gif", ".pdf", ".zip", ".gz", ".mp4", ".mov",
+              ".woff", ".woff2", ".ttf", ".ico", ".webp", ".mp3", ".wav", ".so", ".dylib"}
+SKIP_DIRS = {".git", "node_modules", ".venv", "venv", "__pycache__", ".next", "dist",
+             "build", ".cache", "graphify-out", ".DS_Store"}
+
+
+def cmd_preflight(path):
+    path = os.path.expanduser(path or ".")
+    terms, cfg = E.load_terms()
+    if not terms:
+        print(YELLOW + "no terms loaded; preflight only checks builtin categories." + RESET)
+    per_dir = {}
+    scanned = 0
+    for root, dirs, files in os.walk(path):
+        dirs[:] = [d for d in dirs if d not in SKIP_DIRS and not d.startswith(".")]
+        for fn in files:
+            if os.path.splitext(fn)[1].lower() in BINARY_EXT:
+                continue
+            fp = os.path.join(root, fn)
+            try:
+                if os.path.getsize(fp) > 2_000_000:
+                    continue
+                with open(fp, "r", encoding="utf-8", errors="ignore") as fh:
+                    content = fh.read()
+            except Exception:
+                continue
+            scanned += 1
+            _out, hits = E.mask_text(content, terms, cfg)
+            n = sum(hits.values())
+            if n:
+                rel = os.path.relpath(root, path)
+                d = per_dir.setdefault(rel, {"files": 0, "hits": 0, "kinds": {}})
+                d["files"] += 1
+                d["hits"] += n
+                for k, v in hits.items():
+                    d["kinds"][k] = d["kinds"].get(k, 0) + v
+
+    print("scanned %d text file(s) under %s\n" % (scanned, path))
+    if not per_dir:
+        print(GREEN + "clean - nothing in this tree matches the mask list." + RESET)
+        return 0
+    print("%-46s %6s %6s  %s" % ("DIRECTORY", "FILES", "HITS", "CATEGORIES"))
+    for rel, d in sorted(per_dir.items(), key=lambda kv: -kv[1]["hits"]):
+        sev = RED + "HOT " + RESET if d["hits"] >= 25 else (
+            YELLOW + "warm" + RESET if d["hits"] >= 5 else DIM + "low " + RESET)
+        kinds = ",".join(sorted(d["kinds"]))
+        # The directory NAME can itself be sensitive, so it goes through the
+        # engine before it is printed. Preflight output must be camera-safe.
+        safe_rel, _ = E.mask_text(rel, terms, cfg)
+        print("%s %-42s %6d %6d  %s" % (sev, safe_rel[:42], d["files"], d["hits"], kinds))
+    print(DIM + "\nNo matched text is shown, by design. HOT directories are the ones not to"
+          "\nopen on camera, even with the mask armed." + RESET)
+    return 0
+
+
+def cmd_doctor():
+    ok = True
+
+    def check(label, good, detail=""):
+        nonlocal ok
+        if not good:
+            ok = False
+        print("%s %s %s" % ((GREEN + "PASS" + RESET) if good else (RED + "FAIL" + RESET),
+                            label, DIM + detail + RESET))
+
+    check("private dir exists", os.path.isdir(E.PRIVATE_DIR), E.PRIVATE_DIR)
+    if os.path.isdir(E.PRIVATE_DIR):
+        mode = oct(os.stat(E.PRIVATE_DIR).st_mode & 0o777)
+        check("private dir is 0o700", mode == "0o700", mode)
+    exists = os.path.isfile(E.TERMS_PATH)
+    check("term file exists", exists, E.TERMS_PATH)
+    if exists:
+        mode = oct(os.stat(E.TERMS_PATH).st_mode & 0o777)
+        check("term file is 0o600", mode == "0o600", mode)
+        check("term file parses", bool(load_raw().get("terms") is not None))
+
+    # Hook registration
+    try:
+        with open(SETTINGS, "r", encoding="utf-8") as fh:
+            hooks = json.load(fh).get("hooks", {})
+        post = json.dumps(hooks.get("PostToolUse", []))
+        ups = json.dumps(hooks.get("UserPromptSubmit", []))
+        check("PostToolUse hook registered", "hook_posttooluse.py" in post)
+        check("UserPromptSubmit hook registered", "hook_userpromptsubmit.py" in ups)
+    except Exception as exc:
+        check("settings.json readable", False, str(exc))
+
+    # End-to-end: feed the hook exactly what Claude Code sends.
+    was_armed = E.is_armed()
+    E.set_armed(True)
+    probe = json.dumps({
+        "hook_event_name": "PostToolUse",
+        "tool_name": "Bash",
+        "tool_input": {"command": "echo test"},
+        "tool_response": {"stdout": "contact someone@example.com key sk-ant-api03-"
+                                    + "A" * 30, "stderr": "", "interrupted": False},
+    })
+    try:
+        proc = subprocess.run(
+            [sys.executable, os.path.join(HERE, "hook_posttooluse.py")],
+            input=probe, capture_output=True, text=True, timeout=15)
+        out = json.loads(proc.stdout) if proc.stdout.strip() else {}
+        updated = out.get("hookSpecificOutput", {}).get("updatedToolOutput", "")
+        check("hook emits updatedToolOutput", bool(updated))
+        # `updated and` guards against a false PASS: "x" not in "" is True, so an
+        # empty result would otherwise report both redactions as successful.
+        check("hook redacted the email",
+              bool(updated) and "someone@example.com" not in updated)
+        check("hook redacted the key",
+              bool(updated) and "sk-ant-api03-" not in updated)
+    except Exception as exc:
+        check("hook end-to-end", False, str(exc))
+    finally:
+        E.set_armed(was_armed)
+
+    print("\n" + (GREEN + "body-double is wired correctly." + RESET if ok else
+                  RED + "body-double is NOT fully wired. Fix the FAIL lines above." + RESET))
+    if ok:
+        print(DIM + "Reminder: hooks load at startup. If you just edited settings.json,"
+                    "\nrestart Claude Code before trusting this in a recording." + RESET)
+    return 0 if ok else 1
+
+
+def cmd_footer():
+    """Toggle the '[redacted: N]' line. Off by default so it stays out of
+    footage; on when you want to prove the tool is working on camera."""
+    arg = (sys.argv[2] if len(sys.argv) > 2 else "").lower()
+    raw = load_raw()
+    cfg = raw.setdefault("config", {})
+    if arg in ("on", "true", "1"):
+        cfg["show_footer"] = True
+    elif arg in ("off", "false", "0"):
+        cfg["show_footer"] = False
+    else:
+        print("footer is %s. usage: bodydouble footer on|off"
+              % ("ON" if cfg.get("show_footer") else "OFF"))
+        return
+    save_raw(raw)
+    print("footer %s" % ("ON - redaction count will show in output"
+                         if cfg["show_footer"] else "OFF - silent redaction"))
+
+
+def cmd_canary():
+    """Print synthetic bait that a LIVE hook will redact.
+
+    `doctor` runs the hook script directly, so it proves the SCRIPT works. It
+    cannot prove THIS session loaded the hook, because hooks are read at
+    startup. This does: run it through the Bash tool and read the screen.
+    Every value below is fake.
+    """
+    print("canary-not-a-real-address@example.invalid")
+    print("sk-ant-api03-" + "C" * 40)
+    print("card 4111 1111 1111 1111 / ssn 123-45-6789 / 415-555-0142")
+    print("")
+    print("Armed and hook loaded  -> the three lines above show [email], "
+          "[anthropic-key], [card-number], [gov-id], [phone].")
+    print("Raw values still visible -> this session has NOT loaded the hook. "
+          "Restart Claude Code, or you are disarmed. Check `bodydouble status`.")
+
+
+COMMANDS = {
+    "canary": cmd_canary, "footer": cmd_footer,
+    "on": cmd_on, "arm": cmd_on, "off": cmd_off, "disarm": cmd_off,
+    "status": cmd_status, "add": cmd_add, "rm": cmd_rm, "remove": cmd_rm,
+    "list": cmd_list, "test": cmd_test, "selftest": cmd_selftest, "doctor": cmd_doctor,
+}
+
+if __name__ == "__main__":
+    args = sys.argv[1:]
+    if not args or args[0] in ("-h", "--help", "help"):
+        print(__doc__)
+        sys.exit(0)
+    cmd = args[0]
+    if cmd == "preflight":
+        sys.exit(cmd_preflight(args[1] if len(args) > 1 else "."))
+    fn = COMMANDS.get(cmd)
+    if not fn:
+        print("unknown command: %s" % cmd)
+        print(__doc__)
+        sys.exit(2)
+    sys.exit(fn() or 0)
