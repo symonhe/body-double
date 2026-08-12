@@ -79,7 +79,14 @@ BUILTIN = [
     ("medical", r"\b[A-Z][A-Za-z'\-]+(?:\s+[A-Z][A-Za-z'\-]+)?,\s*(?:M\.?D\.?|D\.?O\.?|N\.?P\.?|P\.?A\.?|R\.?N\.?|D\.?D\.?S\.?)\b", "[provider], [credential]"),
     ("medical", r"(?i)(?<![\w.])\d+(?:\.\d+)?\s?(?:mg|mcg|ug|ml|cc|iu|units?)\b(?:\s?(?:bid|tid|qid|qd|prn|po|daily|twice daily))?", "[dose]"),
     ("medical", r"(?i)\b(?:MRN|medical record (?:no\.?|number)|patient (?:id|no\.?|number))\s*[:#=]?\s*[\w\-]{4,}", "[patient-id]"),
-    ("medical", r"(?i)\b(?:policy|member|group)\s*(?:id|no\.?|number|#)\s*[:#=]?\s*[\w\-]{5,}", "[insurance-id]"),
+    # Accepts "policy: BCBS-IL-77120458" and "group number 0093311" alike: either an
+    # id-word or an explicit separator will do, but one of them is required so that
+    # ordinary phrases like "group of parents" are left alone.
+    ("medical", r"(?i)\b(?:policy|member|group|medicare|medicaid)\s*(?:(?:id|no\.?|number|#)\s*[:#=]?\s*|[:#=]\s*)[\w\-]{5,}", "[insurance-id]"),
+    # Medicare/Medicaid IDs are often written with no separator at all. Safe to
+    # allow because the lookahead demands a digit in the token, so "Medicare
+    # program" and "Medicaid expansion" are left alone.
+    ("medical", r"(?i)\b(?:medicare|medicaid)\s+(?=[\w\-]*\d)[A-Za-z0-9][\w\-]{4,}", "[insurance-id]"),
 ]
 
 # Compiled lazily and cached at module import.
